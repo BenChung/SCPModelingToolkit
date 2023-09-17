@@ -1,0 +1,3 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+SCPModelingToolkit = "27597c66-89f9-4c6b-87fd-949caa5b4795"
