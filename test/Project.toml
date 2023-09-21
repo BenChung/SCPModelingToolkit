@@ -1,2 +1,5 @@
 [deps]
+DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
+ECOS = "e2685f51-7e38-5353-a97d-a921fd2c8199"
+SCPToolbox = "bd2bc758-a5dc-11eb-050f-6b2434548817"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

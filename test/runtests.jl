@@ -1,6 +1,9 @@
-using SCPModelingToolkit
+using SCPModelingToolkit, LinearAlgebra, ModelingToolkit
+using SCPToolbox
+import Symbolics, ECOS
+
 using Test
 
 @testset "SCPModelingToolkit.jl" begin
-    # Write your tests here.
+    import("scpt_examples/quad.jl")
 end
