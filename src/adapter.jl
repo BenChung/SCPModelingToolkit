@@ -1,53 +1,74 @@
 function mtk_add_conic_constraints!(pbm, prob::SCPtProblem, cstrs::Vector{ConicConstraint}, algo)
     state_constraints = ConicConstraint[]
     control_constraints = ConicConstraint[]
+    combined_constraints = ConicConstraint[]
     for cs in cstrs
-        if cs.eqn isa Vector
-            vars = collect(Iterators.flatten(Symbolics.get_variables.(cs.eqn)))
+        if cs.eqn(0.0, 1) isa Vector
+            vars = collect(Iterators.flatten(Symbolics.get_variables.(cs.eqn(0.0, 1))))
         else
-            vars = Symbolics.get_variables(cs.eqn)
+            vars = Symbolics.get_variables(cs.eqn(0.0, 1))
         end
         if all(!isnothing, indexof.(vars, ( [prob.states; prob.parameters], )))
             push!(state_constraints, cs)
         elseif all(!isnothing, indexof.(vars, ([prob.controls; prob.parameters],)))
             push!(control_constraints, cs)
         else
-            throw("constraint $(cs.name) with equation $(cs.eqn) has both state and control variables");
+            push!(combined_constraints, cs)
+            #throw("constraint $(cs.name) with equation $(cs.eqn) has both state and control variables");
         end
     end
-    if length(control_constraints) > 0
-        local symbolic_control_vars = [prob.controls; prob.parameters]
-        problem_set_U!(
-            pbm,
-            (t, k, u, p, pbm, ocp) -> begin 
-                common = (pbm, ocp, algo)
-                for cs in control_constraints
-                    define_conic_constraint!(
-                        common...,
-                        cs.cone,
-                        cs.name,
-                        (u...,p...),
-                        (args...) -> Symbolics.value.(Base.Fix2(substitute, Dict(symbolic_control_vars .=> args)).(cs.eqn)),
-                    )
-                end
-        end)
-    end
+    # this is SUPER LAME but for totally unclear reasons SCPt doesn't support constraints that couple controls (including slacks!) and states
+    # so we cheat! and keep a big array of states and constraint variables that are given to the X and U set setters
+
+    states = Dict{Int, Any}()
     if length(state_constraints) > 0
         local symbolic_state_vars = [prob.states; prob.parameters]
         problem_set_X!(
             pbm,
             (t, k, x, p, pbm, ocp) -> begin 
                 common = (pbm, ocp, algo)
+                states[k] = x
                 for cs in state_constraints
                     define_conic_constraint!(
                         common...,
                         cs.cone,
                         cs.name,
                         (x...,p...),
-                        (args...) -> Symbolics.value.(Base.Fix2(substitute, Dict(symbolic_state_vars .=> args)).(cs.eqn)),
+                        (args...) -> Symbolics.value.(Base.Fix2(substitute, Dict(symbolic_state_vars .=> args)).(cs.eqn(t,k))),
                     )
                 end
         end)
+    if length(control_constraints) > 0
+        local symbolic_control_vars = [prob.controls; prob.parameters]
+        local combined_control_vars = [prob.states; prob.controls; prob.parameters]
+        problem_set_U!(
+            pbm,
+            (t, k, u, p, pbm, ocp) -> begin 
+                common = (pbm, ocp, algo)
+                x = states[k]
+                for cs in control_constraints
+                    define_conic_constraint!(
+                        common...,
+                        cs.cone,
+                        cs.name,
+                        (u...,p...),
+                        (args...) -> Symbolics.value.(Base.Fix2(substitute, Dict(symbolic_control_vars .=> args)).(cs.eqn(t,k))),
+                    )
+                end
+                for cs in combined_constraints
+                    if value(x) isa Vector{Float64}
+                        continue 
+                    end
+                    define_conic_constraint!(
+                        common...,
+                        cs.cone,
+                        cs.name,
+                        (x..., u..., p...),
+                        (args...) -> Symbolics.value.(Base.Fix2(substitute, Dict(combined_control_vars .=> args)).(cs.eqn(t,k))),
+                    )
+                end
+        end)
+    end
     end
 end
 
@@ -93,7 +114,7 @@ function mtk_set_bc!(pbm, prob::SCPtProblem, kind, bc)
     )
 end
 
-function solve!(prob::SCPtProblem, solver)
+function solve!(prob::SCPtProblem, solver; modify=nothing)
     algo = :scvx
     pbm = TrajectoryProblem(prob)
 
@@ -129,11 +150,14 @@ function solve!(prob::SCPtProblem, solver)
     for (type, cst) in prob.bcs
         mtk_set_bc!(pbm, prob, type, cst)
     end
+    if !isnothing(modify)
+        modify(pbm)
+    end
     initialize(pbm, prob, prob.initalizer)
 
     N = 30
     Nsub = 15
-    iter_max = 15
+    iter_max = 50
     disc_method = FOH
     trials = 10
     wvc = 1e3
@@ -159,7 +183,7 @@ function solve!(prob::SCPtProblem, solver)
         solver,
         solver_options,
     )
-    
+    pbm.callback! = prob.callback
     pbm = PTR.create(pars, pbm);
     return PTR.solve(pbm)
 end

@@ -1,17 +1,17 @@
 
 struct ConicConstraint
     name::String
-    eqn::Vector{SymbolicUtils.BasicSymbolic}
+    eqn::Function # (t, k) -> Vector{SymbolicUtils.BasicSymbolic}
     cone::SCPToolbox.Parser.ConicLinearProgram.SupportedCone
-    ConicConstraint(name::String, eqn::SymbolicUtils.BasicSymbolic, cone::SCPToolbox.Parser.ConicLinearProgram.SupportedCone) = new(name, [eqn], cone)
-    ConicConstraint(name::String, eqn::Num, cone::SCPToolbox.Parser.ConicLinearProgram.SupportedCone) = new(name, [Symbolics.unwrap(eqn)], cone)
-    ConicConstraint(name::String, eqns::Vector{SymbolicUtils.BasicSymbolic}, cone::SCPToolbox.Parser.ConicLinearProgram.SupportedCone) = new(name, eqns, cone)
-    ConicConstraint(name::String, eqns::Vector{Num}, cone::SCPToolbox.Parser.ConicLinearProgram.SupportedCone) = new(name, Symbolics.unwrap.(eqns), cone)
-    
+    ConicConstraint(name::String, eqn::SymbolicUtils.BasicSymbolic, cone::SCPToolbox.Parser.ConicLinearProgram.SupportedCone) = new(name, (t, k) -> [eqn], cone)
+    ConicConstraint(name::String, eqn::Num, cone::SCPToolbox.Parser.ConicLinearProgram.SupportedCone) = new(name, (t, k) -> [Symbolics.unwrap(eqn)], cone)
+    ConicConstraint(name::String, eqns::Vector{SymbolicUtils.BasicSymbolic}, cone::SCPToolbox.Parser.ConicLinearProgram.SupportedCone) = new(name, (t, k) -> eqns, cone)
+    ConicConstraint(name::String, eqns::Vector{Num}, cone::SCPToolbox.Parser.ConicLinearProgram.SupportedCone) = new(name, (t, k) -> Symbolics.unwrap.(eqns), cone)
+    ConicConstraint(name::String, eqn_generator::Function, cone::SCPToolbox.Parser.ConicLinearProgram.SupportedCone) = new(name, eqn_generator, cone)
 end
 abstract type Initialization end
 
-struct SCPtProblem 
+struct SCPtProblem{F}
     states::Vector{SymbolicUtils.BasicSymbolic}
     controls::Vector{SymbolicUtils.BasicSymbolic}
     parameters::Vector{SymbolicUtils.BasicSymbolic}
@@ -24,6 +24,7 @@ struct SCPtProblem
     nonconvex_constraints::Vector{SymbolicUtils.BasicSymbolic}
     bcs::Dict{Symbol, Vector{SymbolicUtils.BasicSymbolic}}
     initalizer::Initialization
+    callback::F
     function SCPtProblem(; 
         scale_advice::Dict{Num, Tuple{Float64, Float64}} = Dict(), 
         dynamics::ModelingToolkit.ODESystem,
@@ -32,23 +33,23 @@ struct SCPtProblem
         running_cost::Function, 
         nonconvex_constraints::Vector{Num},
         bcs::Dict{Symbol, Vector{Num}},
-        initalizer::Initialization)
+        initalizer::Initialization,
+        slacks::Vector = [],
+        callback::F = x->nothing) where F
         vars = unique([ModelingToolkit.states(dynamics);
                 ModelingToolkit.parameters(dynamics);
-                Symbolics.scalarize.(collect(Iterators.flatmap(c->Iterators.flatmap(Symbolics.get_variables, c.eqn), constraints)));
+                Symbolics.scalarize.(collect(Iterators.flatmap(c->Iterators.flatmap(Symbolics.get_variables, c.eqn(0.0, 1)), constraints)));
                 Symbolics.get_variables(nonconvex_constraints);
                 Symbolics.get_variables(terminal_cost);
-                vcat((Symbolics.get_variables.(values(bcs)))...)])
+                vcat((Symbolics.get_variables.(values(bcs)))...);
+                reduce(vcat, Symbolics.get_variables.(slacks); init=[])])
         states = filter(Base.Fix2(isdynamics, false), vars)
         controls = filter(Base.Fix2(iscontrols, false), vars)
         parameters = filter(Base.Fix2(istunable, false), vars)
         @assert length(vars) == length(union(states, controls, parameters)) "Some variables have not been tagged!"
         
         tc = Symbolics.unwrap(terminal_cost)
-        println(tc)
-        println(terminal_cost)
-
-        return new(states, 
+        return new{F}(states, 
             controls, 
             parameters, 
             unwrap_dict(scale_advice), 
@@ -58,7 +59,8 @@ struct SCPtProblem
             running_cost, 
             Symbolics.unwrap.(nonconvex_constraints), 
             Dict(k => Symbolics.unwrap.(v) for (k,v) in bcs), 
-            initalizer)
+            initalizer,
+            callback)
     end
 end
 
