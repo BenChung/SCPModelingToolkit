@@ -27,6 +27,7 @@ function initialize(pbm::TrajectoryProblem, p::SCPtProblem, s::StraightlineInter
     uf = ModelingToolkit.varmap_to_vars(s.final, p.controls)
     
     problem_set_guess!(pbm, (N, pbm) -> begin
-        return straightline_interpolate(x0, xf, N), straightline_interpolate(u0, uf, N), isnothing(pv) ? Float64[] : pv
+        res = straightline_interpolate(x0, xf, N), straightline_interpolate(u0, uf, N), isnothing(pv) ? Float64[] : pv
+        return res
     end)
 end

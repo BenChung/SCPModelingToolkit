@@ -37,7 +37,8 @@ struct SCPtProblem{F}
         slacks::Vector = [],
         callback::F = x->nothing) where F
         vars = unique([ModelingToolkit.states(dynamics);
-                ModelingToolkit.parameters(dynamics);
+                SCPModelingToolkit.control_variables(dynamics);
+                filter(Base.Fix2(istunable, false), ModelingToolkit.parameters(dynamics));
                 Symbolics.scalarize.(collect(Iterators.flatmap(c->Iterators.flatmap(Symbolics.get_variables, c.eqn(0.0, 1)), constraints)));
                 Symbolics.get_variables(nonconvex_constraints);
                 Symbolics.get_variables(terminal_cost);
@@ -46,7 +47,9 @@ struct SCPtProblem{F}
         states = filter(Base.Fix2(isdynamics, false), vars)
         controls = filter(Base.Fix2(iscontrols, false), vars)
         parameters = filter(Base.Fix2(istunable, false), vars)
-        @assert length(vars) == length(union(states, controls, parameters)) "Some variables have not been tagged!"
+        if length(vars) != length(union(states, controls, parameters)) 
+            @debug "Some variables have not been tagged! \n states: $states \n controls: $controls \n parameters: $parameters \n vars: $vars"
+        end
         
         tc = Symbolics.unwrap(terminal_cost)
         return new{F}(states, 

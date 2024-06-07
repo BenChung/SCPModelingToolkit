@@ -23,11 +23,13 @@ function internal_generate_function(sys::ModelingToolkit.ODESystem, ps = Modelin
     x = map(x -> ModelingToolkit.time_varying_as_func(ModelingToolkit.value(x), sys), ModelingToolkit.outputs(sys))
     u = map(x -> ModelingToolkit.time_varying_as_func(ModelingToolkit.value(x), sys), ModelingToolkit.inputs(sys))
     p = map(x -> ModelingToolkit.time_varying_as_func(ModelingToolkit.value(x), sys), ModelingToolkit.tunable_parameters(sys))
+    ps = map(x -> ModelingToolkit.time_varying_as_func(ModelingToolkit.value(x), sys), 
+        setdiff(setdiff(ModelingToolkit.parameters(sys), ModelingToolkit.tunable_parameters(sys)), ModelingToolkit.inputs(sys)))
     t = ModelingToolkit.get_iv(sys)
 
     pre, sol_states = ModelingToolkit.get_substitutions_and_solved_states(sys, no_postprocess = has_difference)
 
-    build_function(rhss, x, u, p, t; postprocess_fbody = pre, states = sol_states,
+    build_function(rhss, x, u, p, ps, t; postprocess_fbody = pre, states = sol_states,
         kwargs...)
 end
 

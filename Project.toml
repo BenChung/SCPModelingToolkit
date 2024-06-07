@@ -4,6 +4,8 @@ authors = ["Ben Chung <ckfinite@gmail.com> and contributors"]
 version = "1.0.0-DEV"
 
 [deps]
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
 ModelingToolkit = "961ee093-0014-501f-94e3-6117800e7a78"
 SCPToolbox = "bd2bc758-a5dc-11eb-050f-6b2434548817"
 Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"

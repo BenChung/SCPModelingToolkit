@@ -1,6 +1,6 @@
 module SCPModelingToolkit
-using ModelingToolkit, SCPToolbox
-import Symbolics
+using ModelingToolkit, SCPToolbox, ForwardDiff
+import Symbolics, JuMP
 
 
 include("problem.jl")

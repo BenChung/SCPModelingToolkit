@@ -34,7 +34,13 @@ function mtk_add_conic_constraints!(pbm, prob::SCPtProblem, cstrs::Vector{ConicC
                         cs.cone,
                         cs.name,
                         (x...,p...),
-                        (args...) -> Symbolics.value.(Base.Fix2(substitute, Dict(symbolic_state_vars .=> args)).(cs.eqn(t,k))),
+                        (args...) -> begin 
+                            expr = Symbolics.value.(Base.Fix2(substitute, Dict(symbolic_state_vars .=> args)).(cs.eqn(t,k)))
+                            if any(e-> e isa JuMP.AffExpr, expr)
+                                expr = [e isa JuMP.AffExpr ? e : JuMP.AffExpr(e) for e in expr]
+                            end
+                            return expr
+                        end,
                     )
                 end
         end)
@@ -52,7 +58,13 @@ function mtk_add_conic_constraints!(pbm, prob::SCPtProblem, cstrs::Vector{ConicC
                         cs.cone,
                         cs.name,
                         (u...,p...),
-                        (args...) -> Symbolics.value.(Base.Fix2(substitute, Dict(symbolic_control_vars .=> args)).(cs.eqn(t,k))),
+                        (args...) -> begin 
+                            expr = Symbolics.value.(Base.Fix2(substitute, Dict(symbolic_control_vars .=> args)).(cs.eqn(t,k)))
+                            if any(e-> e isa JuMP.AffExpr, expr)
+                                expr = [e isa JuMP.AffExpr ? e : JuMP.AffExpr(e) for e in expr]
+                            end
+                            return expr
+                        end,
                     )
                 end
                 for cs in combined_constraints
@@ -114,7 +126,22 @@ function mtk_set_bc!(pbm, prob::SCPtProblem, kind, bc)
     )
 end
 
-function solve!(prob::SCPtProblem, solver; modify=nothing)
+function solve!(prob::SCPtProblem, solver; 
+        parameters=Dict(),
+        modify=nothing,
+        N = 30, 
+        Nsub = 15, 
+        iter_max = 50,
+        trials = 10,
+        wvc = 1e3,
+        wtr = 0.1,
+        ϵ_abs = 1e-5,
+        ϵ_rel = 0.01/100,
+        feas_tol = 1e-3,
+        q_tr = 8,
+        q_exit = 2,
+        solver_options = Dict("verbose" => false),
+        use_forwarddiff=false)
     algo = :scvx
     pbm = TrajectoryProblem(prob)
 
@@ -129,24 +156,51 @@ function solve!(prob::SCPtProblem, solver; modify=nothing)
     problem_set_terminal_cost!(pbm, build_function(prob.terminal_cost, prob.states, prob.parameters, expression=Val{false}))
     problem_set_running_cost!(pbm, algo, (t, k, x, u, p, pbm) -> Symbolics.value(substitute(prob.running_cost(t,k), [prob.states .=> x; collect(prob.controls .=> u); prob.parameters .=> p])))
 
+    paramdict = merge(ModelingToolkit.defaults(prob.dynamics), parameters)
+    ps = ModelingToolkit.varmap_to_vars(paramdict, 
+        setdiff(setdiff(ModelingToolkit.parameters(prob.dynamics), ModelingToolkit.tunable_parameters(prob.dynamics)), prob.controls))
+
     func = first(internal_generate_function(prob.dynamics; expression=Val{false}))
-    jac = first(mtk_jacobian(prob.dynamics, prob.states; expression=Val{false}))
-    control_jac = first(mtk_jacobian(prob.dynamics, prob.controls; expression=Val{false}))
-    param_jac = first(mtk_jacobian(prob.dynamics, prob.parameters; expression=Val{false}))
+    if !use_forwarddiff
+        jac = first(mtk_jacobian(prob.dynamics, prob.states; expression=Val{false}))
+        control_jac = first(mtk_jacobian(prob.dynamics, prob.controls; expression=Val{false}))
+        param_jac = first(mtk_jacobian(prob.dynamics, prob.parameters; expression=Val{false}))
+    else
+        jac = (x,u,p,t) -> begin 
+            sens = ForwardDiff.jacobian((x) -> func(x, u, p, ps, t), x)
+            return sens
+        end
+        control_jac = (x,u,p,t) -> ForwardDiff.jacobian((u) -> func(x, u, p, ps, t), u)
+        param_jac = (x,u,p,t) -> ForwardDiff.jacobian((p) -> func(x, u, p, ps, t), p) 
+    end
     problem_set_dynamics!(
         pbm,
         # Dynamics f
-        (t, k, x, u, p, pbm) -> func(x, u, p, t),
+        (t, k, x, u, p, pbm) -> begin
+            res = func(x, u, p, ps, t)
+            return res
+        end,
         # Jacobian df/dx
-        (t, k, x, u, p, pbm) -> jac(x, u, p, t),
+        (t, k, x, u, p, pbm) -> begin
+            res = jac(x, u, p, t)
+            return res
+        end,
         # Jacobian df/du
-        (t, k, x, u, p, pbm) -> control_jac(x, u, p, t),
+        (t, k, x, u, p, pbm) -> begin
+            res = control_jac(x, u, p, t)
+            return res
+            end,
         # Jacobian df/dp
-        (t, k, x, u, p, pbm) -> param_jac(x, u, p, t),
+        (t, k, x, u, p, pbm) -> begin 
+            res = param_jac(x, u, p, t)
+            return res
+        end,
     )
 
     mtk_add_conic_constraints!(pbm, prob, prob.constraints, algo)
-    mtk_add_nonconvex_constraints!(pbm, prob, prob.dynamics, prob.nonconvex_constraints, algo)
+    if !isempty(prob.nonconvex_constraints)
+        mtk_add_nonconvex_constraints!(pbm, prob, prob.dynamics, prob.nonconvex_constraints, algo)
+    end
     for (type, cst) in prob.bcs
         mtk_set_bc!(pbm, prob, type, cst)
     end
@@ -154,20 +208,7 @@ function solve!(prob::SCPtProblem, solver; modify=nothing)
         modify(pbm)
     end
     initialize(pbm, prob, prob.initalizer)
-
-    N = 30
-    Nsub = 15
-    iter_max = 50
     disc_method = FOH
-    trials = 10
-    wvc = 1e3
-    wtr = 0.1
-    ε_abs = 1e-5
-    ε_rel = 0.01 / 100
-    feas_tol = 1e-3
-    q_tr = 8
-    q_exit = 2
-    solver_options = Dict("verbose" => false)
     pars = PTR.Parameters(
         N,
         Nsub,
@@ -175,8 +216,8 @@ function solve!(prob::SCPtProblem, solver; modify=nothing)
         disc_method,
         wvc,
         wtr,
-        ε_abs,
-        ε_rel,
+        ϵ_abs,
+        ϵ_rel,
         feas_tol,
         q_tr,
         q_exit,
@@ -185,5 +226,6 @@ function solve!(prob::SCPtProblem, solver; modify=nothing)
     )
     pbm.callback! = prob.callback
     pbm = PTR.create(pars, pbm);
+    
     return PTR.solve(pbm)
 end
